@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
@@ -11,17 +10,10 @@ import (
 )
 
 type Event struct {
-	// Events are pushed to this channel by the main events-gathering routine
-	Message chan string
-
-	// New client connections
-	NewClients chan chan string
-
-	// Closed client connections
+	Message       chan string
+	NewClients    chan chan string
 	ClosedClients chan chan string
-
-	// Total client connections
-	TotalClients map[chan string]bool
+	TotalClients  map[chan string]bool
 }
 
 type Request struct {
@@ -41,7 +33,7 @@ var requests = make([]Request, 0)
 func setupRouter() *gin.Engine {
 	stream := setupStream()
 	router := gin.Default()
-	router.LoadHTMLGlob("templates/*")
+	router.LoadHTMLFiles("templates/index.tmpl")
 
 	router.GET("/__dashboard__/sse", stream.serveHTTP(), func(c *gin.Context) {
 		c.Header("Content-Type", "text/event-stream")
@@ -68,8 +60,12 @@ func setupRouter() *gin.Engine {
 	})
 
 	router.GET("/__dashboard__", func(c *gin.Context) {
-		c.HTML(http.StatusOK, "index.html", gin.H{
-			"title": "Main website",
+		raw, err := json.Marshal(requests)
+		if err != nil {
+			panic(err)
+		}
+		c.HTML(http.StatusOK, "index.tmpl", gin.H{
+			"requests": string(raw),
 		})
 	})
 
@@ -94,7 +90,7 @@ func setupRouter() *gin.Engine {
 			request.Body = string(body)
 		}
 
-		requests = append(requests, request)
+		requests = append([]Request{request}, requests...)
 		raw, err := json.Marshal(request)
 		if err != nil {
 			panic(err)
@@ -112,12 +108,10 @@ func (stream *Event) listen() {
 		select {
 		case client := <-stream.NewClients:
 			stream.TotalClients[client] = true
-			log.Printf("Client added. %d registered clients", len(stream.TotalClients))
 
 		case client := <-stream.ClosedClients:
 			delete(stream.TotalClients, client)
 			close(client)
-			log.Printf("Removed client. %d registered clients", len(stream.TotalClients))
 
 		case eventMsg := <-stream.Message:
 			for clientMessageChan := range stream.TotalClients {
@@ -142,25 +136,19 @@ func setupStream() (event *Event) {
 
 func (stream *Event) serveHTTP() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Initialize client channel
 		clientChan := make(ClientChan)
-
-		// Send new connection to event server
 		stream.NewClients <- clientChan
 
 		defer func() {
-			// Send closed connection to event server
 			stream.ClosedClients <- clientChan
 		}()
 
 		c.Set("clientChan", clientChan)
-
 		c.Next()
 	}
 }
 
 func main() {
 	router := setupRouter()
-
 	router.Run(":8080")
 }
